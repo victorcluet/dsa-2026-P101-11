@@ -506,7 +506,7 @@ static int load_places_from_file(PlaceList *list, const char *map_name) {
   return 1;
 }
 
-/* we also do a map validation*/
+/* we also do a map validation.*/
 
 int is_valid_map_name(const char *name) {
   const char *valid[] = {"xs_1", "xs_2", "md_1", "lg_1", "xl_1", "2xl_1"};

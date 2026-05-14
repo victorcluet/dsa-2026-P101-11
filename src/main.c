@@ -10,7 +10,7 @@ void createaleak() {
 }
 
 int main() {
-  printf("*****************\nWelcome to DSA!\n*****************\n");
+  printf("*****************\nWelcome to DSA!!\n*****************\n");
 
   run_program();
 
