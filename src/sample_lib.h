@@ -4,6 +4,8 @@
 #define MAX_NAME 128
 #define MAX_INPUT 256
 
+#define INTERSECTION_BUCKETS 1009
+
 typedef struct House {
   char street_name[MAX_NAME];
   int number;
@@ -46,7 +48,56 @@ int append_place(PlaceList *list, const char *name, double lat, double lon);
 void free_place_list(PlaceList *list);
 Place *find_exact_place(PlaceList *list, const char *name);
 
+int collect_similar_places(PlaceList *list, const char *input,
+                           char suggestions[][MAX_NAME], int max_suggestions);
+
 int collect_similar_streets(HouseList *list, const char *input,
                             char suggestions[][MAX_NAME], int max_suggestions);
+
+typedef struct StreetSegment {
+  char name[MAX_NAME];
+  char id1[MAX_NAME];
+  char id2[MAX_NAME];
+  double lat1;
+  double lon1;
+  double lat2;
+  double lon2;
+  struct StreetSegment *next;
+} StreetSegment;
+
+typedef struct {
+  StreetSegment *head;
+  int count;
+} StreetList;
+
+void init_street_list(StreetList *list);
+int append_street_segment(StreetList *list, const char *name,
+                          const char *id1, const char *id2,
+                          double lat1, double lon1,
+                          double lat2, double lon2);
+void free_street_list(StreetList *list);
+StreetSegment *find_closest_street_segment(StreetList *list,
+                                           double lat, double lon);
+void print_connected_streets(StreetList *list, StreetSegment *segment);
+
+typedef struct ConnectionNode {
+  StreetSegment *segment;
+  struct ConnectionNode *next;
+} ConnectionNode;
+
+typedef struct IntersectionEntry {
+  char intersection_id[MAX_NAME];
+  ConnectionNode *segments;
+  struct IntersectionEntry *next;
+} IntersectionEntry;
+
+typedef struct {
+  IntersectionEntry *buckets[INTERSECTION_BUCKETS];
+} IntersectionMap;
+
+void init_intersection_map(IntersectionMap *map);
+int build_intersection_map(IntersectionMap *map, StreetList *streets);
+void free_intersection_map(IntersectionMap *map);
+void print_connected_streets_fast(IntersectionMap *map, StreetSegment *segment);
 
 #endif
