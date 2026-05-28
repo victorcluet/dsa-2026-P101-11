@@ -1,15 +1,26 @@
+
 #include "sample_lib.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define MAX_SUGGESTIONS 5
+
+#define INTERSECTION_BUCKETS 1009
+
+#define VISITED_BUCKETS 1009
 
 typedef struct {
   char street[MAX_NAME];
   int distance;
 } StreetSuggestion;
+
+typedef struct {
+  char name[MAX_NAME];
+  int distance;
+} PlaceSuggestion;
 
 static void trim_newline(char *s) {
   if (s == NULL) {
@@ -63,6 +74,11 @@ static void normalize_spaces(char *s) {
   int last_was_space = 1;
 
   while (s[i] != '\0') {
+    if (s[i] == '-' || s[i] == '_' ||
+        s[i] == ',' || s[i] == '.') {
+      s[i] = ' ';
+    }
+
     if (isspace((unsigned char)s[i])) {
       if (!last_was_space) {
         temp[j] = ' ';
@@ -428,6 +444,450 @@ int collect_similar_streets(HouseList *list, const char *input,
   return count;
 }
 
+static int normalized_place_in_list(PlaceSuggestion arr[], int count,
+                                    const char *place_name) {
+  char norm_target[MAX_INPUT];
+  int i;
+
+  normalize_place(norm_target, place_name);
+
+  for (i = 0; i < count; i++) {
+    char norm_saved[MAX_INPUT];
+    normalize_place(norm_saved, arr[i].name);
+
+    if (strcmp(norm_saved, norm_target) == 0) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+int collect_similar_places(PlaceList *list, const char *input,
+                           char suggestions[][MAX_NAME], int max_suggestions) {
+  PlaceSuggestion *all;
+  Place *current = list->head;
+  char norm_input[MAX_INPUT];
+  int count = 0;
+  int i;
+  int j;
+
+  all = malloc(sizeof(PlaceSuggestion) * list->count);
+
+  if (all == NULL) {
+    return 0;
+  }
+
+  normalize_place(norm_input, input);
+
+  while (current != NULL) {
+    if (!normalized_place_in_list(all, count, current->name) &&
+        count < list->count) {
+      char norm_cur[MAX_INPUT];
+
+      normalize_place(norm_cur, current->name);
+
+      strncpy(all[count].name, current->name, MAX_NAME - 1);
+      all[count].name[MAX_NAME - 1] = '\0';
+      all[count].distance = levenshtein(norm_input, norm_cur);
+      count++;
+    }
+
+    current = current->next;
+  }
+
+  for (i = 0; i < count - 1; i++) {
+    for (j = i + 1; j < count; j++) {
+      if (all[j].distance < all[i].distance) {
+        PlaceSuggestion temp = all[i];
+        all[i] = all[j];
+        all[j] = temp;
+      }
+    }
+  }
+
+  if (count > max_suggestions) {
+    count = max_suggestions;
+  }
+
+  for (i = 0; i < count; i++) {
+    strncpy(suggestions[i], all[i].name, MAX_NAME - 1);
+    suggestions[i][MAX_NAME - 1] = '\0';
+  }
+
+  free(all);
+
+  return count;
+}
+
+void init_street_list(StreetList *list) {
+  list->head = NULL;
+  list->count = 0;
+}
+
+int append_street_segment(StreetList *list, const char *name,
+                          const char *id1, const char *id2,
+                          double lat1, double lon1,
+                          double lat2, double lon2,
+                          double length_meters) {
+  StreetSegment *new_segment;
+  StreetSegment *current;
+
+  new_segment = (StreetSegment *)malloc(sizeof(StreetSegment));
+
+  if (new_segment == NULL) {
+    return 0;
+  }
+
+  strncpy(new_segment->name, name, MAX_NAME - 1);
+  new_segment->name[MAX_NAME - 1] = '\0';
+
+  strncpy(new_segment->id1, id1, MAX_NAME - 1);
+  new_segment->id1[MAX_NAME - 1] = '\0';
+
+  strncpy(new_segment->id2, id2, MAX_NAME - 1);
+  new_segment->id2[MAX_NAME - 1] = '\0';
+
+  new_segment->lat1 = lat1;
+  new_segment->lon1 = lon1;
+  new_segment->lat2 = lat2;
+  new_segment->lon2 = lon2;
+  new_segment->length_meters = length_meters;
+  new_segment->next = NULL;
+
+  if (list->head == NULL) {
+    list->head = new_segment;
+  } else {
+    current = list->head;
+    while (current->next != NULL) {
+      current = current->next;
+    }
+    current->next = new_segment;
+  }
+
+  list->count++;
+  return 1;
+}
+
+void free_street_list(StreetList *list) {
+  StreetSegment *current = list->head;
+  StreetSegment *next;
+
+  while (current != NULL) {
+    next = current->next;
+    free(current);
+    current = next;
+  }
+
+  list->head = NULL;
+  list->count = 0;
+}
+
+static double degrees_to_radians(double degrees) {
+  return degrees * 3.141592653589793 / 180.0;
+}
+
+static double haversine_distance(double lat1, double lon1,
+                                 double lat2, double lon2) {
+  double earth_radius = 6371000.0;
+  double dlat = degrees_to_radians(lat2 - lat1);
+  double dlon = degrees_to_radians(lon2 - lon1);
+  double a;
+  double c;
+
+  lat1 = degrees_to_radians(lat1);
+  lat2 = degrees_to_radians(lat2);
+
+  a = sin(dlat / 2.0) * sin(dlat / 2.0) +
+      cos(lat1) * cos(lat2) *
+      sin(dlon / 2.0) * sin(dlon / 2.0);
+
+  c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+
+  return earth_radius * c;
+}
+
+StreetSegment *find_closest_street_segment(StreetList *list,
+                                           double lat, double lon) {
+  StreetSegment *current = list->head;
+  StreetSegment *best = NULL;
+  double best_distance = -1.0;
+
+  while (current != NULL) {
+    double mid_lat;
+    double mid_lon;
+    double distance;
+
+    mid_lat = (current->lat1 + current->lat2) / 2.0;
+    mid_lon = (current->lon1 + current->lon2) / 2.0;
+
+    distance = haversine_distance(lat, lon, mid_lat, mid_lon);
+
+    if (best == NULL || distance < best_distance) {
+      best = current;
+      best_distance = distance;
+    }
+
+    current = current->next;
+  }
+
+  return best;
+}
+
+static int segments_are_connected(StreetSegment *a, StreetSegment *b) {
+  if (strcmp(a->id2, b->id1) == 0) {
+    return 1;
+  }
+
+  return 0;
+}
+
+static int print_next_different_connected_streets(StreetList *list,
+                                                  StreetSegment *segment) {
+  StreetSegment *base = segment;
+  int steps = 0;
+
+  while (base != NULL && steps < 1000) {
+    StreetSegment *current = list->head;
+    StreetSegment *next_same = NULL;
+    int printed = 0;
+
+    while (current != NULL) {
+      if (current != base &&
+          strcmp(base->id2, current->id1) == 0) {
+
+        if (strcmp(current->name, segment->name) != 0) {
+          printf("        - %s\n", current->name);
+          printed = 1;
+        } else if (next_same == NULL) {
+          next_same = current;
+        }
+      }
+
+      current = current->next;
+    }
+
+    if (printed) {
+      return 1;
+    }
+
+    base = next_same;
+    steps++;
+  }
+
+  return 0;
+}
+
+void print_connected_streets(StreetList *list, StreetSegment *segment) {
+  StreetSegment *current = list->head;
+
+  printf("\nClosest street: %s\n", segment->name);
+  printf("Between %s (%.6f, %.6f) and %s (%.6f, %.6f)\n",
+         segment->id1, segment->lat1, segment->lon1,
+         segment->id2, segment->lat2, segment->lon2);
+
+  printf("\nFrom this street segment, you can go to:\n");
+  printf("    - %s\n", segment->name);
+  printf("  Which is connected to:\n");
+
+  print_next_different_connected_streets(list, segment);
+}
+
+static unsigned int hash_intersection_id(const char *id) {
+  unsigned int hash = 0;
+  int i = 0;
+
+  while (id[i] != '\0') {
+    hash = hash * 31 + (unsigned char)id[i];
+    i++;
+  }
+
+  return hash % INTERSECTION_BUCKETS;
+}
+
+void init_intersection_map(IntersectionMap *map) {
+  int i;
+
+  for (i = 0; i < INTERSECTION_BUCKETS; i++) {
+    map->buckets[i] = NULL;
+  }
+}
+
+static IntersectionEntry *find_intersection_entry(IntersectionMap *map,
+                                                   const char *id) {
+  unsigned int index = hash_intersection_id(id);
+  IntersectionEntry *current = map->buckets[index];
+
+  while (current != NULL) {
+    if (strcmp(current->intersection_id, id) == 0) {
+      return current;
+    }
+
+    current = current->next;
+  }
+
+  return NULL;
+}
+
+static IntersectionEntry *create_intersection_entry(IntersectionMap *map,
+                                                     const char *id) {
+  unsigned int index = hash_intersection_id(id);
+  IntersectionEntry *entry;
+
+  entry = (IntersectionEntry *)malloc(sizeof(IntersectionEntry));
+
+  if (entry == NULL) {
+    return NULL;
+  }
+
+  strncpy(entry->intersection_id, id, MAX_NAME - 1);
+  entry->intersection_id[MAX_NAME - 1] = '\0';
+  entry->segments = NULL;
+
+  entry->next = map->buckets[index];
+  map->buckets[index] = entry;
+
+  return entry;
+}
+
+static int add_segment_to_intersection(IntersectionMap *map,
+                                       const char *id,
+                                       StreetSegment *segment) {
+  IntersectionEntry *entry;
+  ConnectionNode *node;
+
+  entry = find_intersection_entry(map, id);
+
+  if (entry == NULL) {
+    entry = create_intersection_entry(map, id);
+  }
+
+  if (entry == NULL) {
+    return 0;
+  }
+
+  node = (ConnectionNode *)malloc(sizeof(ConnectionNode));
+
+  if (node == NULL) {
+    return 0;
+  }
+
+  node->segment = segment;
+  node->next = entry->segments;
+  entry->segments = node;
+
+  return 1;
+}
+
+int build_intersection_map(IntersectionMap *map, StreetList *streets) {
+  StreetSegment *current = streets->head;
+
+  while (current != NULL) {
+    if (!add_segment_to_intersection(map, current->id1, current)) {
+      return 0;
+    }
+
+    current = current->next;
+  }
+
+  return 1;
+}
+
+void free_intersection_map(IntersectionMap *map) {
+  int i;
+
+  for (i = 0; i < INTERSECTION_BUCKETS; i++) {
+    IntersectionEntry *entry = map->buckets[i];
+
+    while (entry != NULL) {
+      IntersectionEntry *next_entry = entry->next;
+      ConnectionNode *node = entry->segments;
+
+      while (node != NULL) {
+        ConnectionNode *next_node = node->next;
+        free(node);
+        node = next_node;
+      }
+
+      free(entry);
+      entry = next_entry;
+    }
+
+    map->buckets[i] = NULL;
+  }
+}
+
+static IntersectionEntry *find_next_different_entry(IntersectionMap *map,
+                                                    StreetSegment *segment) {
+  StreetSegment *base = segment;
+  IntersectionEntry *entry;
+  ConnectionNode *node;
+  int steps = 0;
+
+  while (base != NULL && steps < 1000) {
+    entry = find_intersection_entry(map, base->id2);
+
+    if (entry == NULL) {
+      return NULL;
+    }
+
+    node = entry->segments;
+
+    while (node != NULL) {
+      if (node->segment != base &&
+          strcmp(node->segment->name, segment->name) != 0) {
+        return entry;
+      }
+
+      node = node->next;
+    }
+
+    node = entry->segments;
+    base = NULL;
+
+    while (node != NULL) {
+      if (node->segment != segment &&
+          strcmp(node->segment->name, segment->name) == 0) {
+        base = node->segment;
+      }
+
+      node = node->next;
+    }
+
+    steps++;
+  }
+
+  return NULL;
+}
+
+void print_connected_streets_fast(IntersectionMap *map, StreetSegment *segment) {
+  IntersectionEntry *entry;
+  ConnectionNode *node;
+
+  printf("\nFAST HASHMAP VERSION\n");
+  printf("From this street segment, you can go to:\n");
+  printf("- %s\n", segment->name);
+  printf("  Which is connected to:\n");
+
+  entry = find_next_different_entry(map, segment);
+
+  if (entry == NULL) {
+    printf("  No connected streets\n");
+    return;
+  }
+
+  node = entry->segments;
+
+  while (node != NULL) {
+    if (node->segment != segment &&
+        strcmp(node->segment->name, segment->name) != 0) {
+      printf("        - %s\n", node->segment->name);
+    }
+
+    node = node->next;
+  }
+}
+
 /* here we do all the file loading that we will need*/
 
 static int load_houses_from_file(HouseList *list, const char *map_name) {
@@ -506,6 +966,54 @@ static int load_places_from_file(PlaceList *list, const char *map_name) {
   return 1;
 }
 
+static int load_streets_from_file(StreetList *list, const char *map_name) {
+  char path[256];
+  FILE *f;
+  char line[512];
+
+  snprintf(path, sizeof(path), "maps/%s/streets.txt", map_name);
+  f = fopen(path, "r");
+
+  if (f == NULL) {
+    snprintf(path, sizeof(path), "../maps/%s/streets.txt", map_name);
+    f = fopen(path, "r");
+  }
+
+  if (f == NULL) {
+    printf("Error opening streets file\n");
+    return 0;
+  }
+
+  init_street_list(list);
+
+  while (fgets(line, sizeof(line), f) != NULL) {
+    char *id1 = strtok(line, ",");
+    char *lat1 = strtok(NULL, ",");
+    char *lon1 = strtok(NULL, ",");
+    char *id2 = strtok(NULL, ",");
+    char *lat2 = strtok(NULL, ",");
+    char *lon2 = strtok(NULL, ",");
+    char *length = strtok(NULL, ",");
+    char *name = strtok(NULL, "\n");
+
+    if (id1 != NULL && lat1 != NULL && lon1 != NULL &&
+        id2 != NULL && lat2 != NULL && lon2 != NULL &&
+        length != NULL && name != NULL) {
+
+      trim_newline(name);
+
+      append_street_segment(list, name, id1, id2,
+                            atof(lat1), atof(lon1),
+                            atof(lat2), atof(lon2),
+                            atof(length));
+    }
+  }
+
+  fclose(f);
+  printf("%d streets loaded\n", list->count);
+  return 1;
+}
+
 /* we also do a map validation*/
 
 int is_valid_map_name(const char *name) {
@@ -521,12 +1029,239 @@ int is_valid_map_name(const char *name) {
   return 0;
 }
 
-/* and here comes the main program */
 
-void run_program(void) {
-  HouseList houses;
-  PlaceList places;
-  char map[32];
+typedef struct QueueNode {
+  Path path;
+  struct QueueNode *next;
+} QueueNode;
+
+static void enqueue(QueueNode **front, QueueNode **back, Path path) {
+  QueueNode *node = malloc(sizeof(QueueNode));
+  if (node == NULL) return;
+
+  node->path = path;
+  node->next = NULL;
+
+  if (*back == NULL) {
+    *front = node;
+    *back = node;
+  } else {
+    (*back)->next = node;
+    *back = node;
+  }
+}
+
+static int dequeue(QueueNode **front, QueueNode **back, Path *path) {
+  QueueNode *temp;
+
+  if (*front == NULL) return 0;
+
+  temp = *front;
+  *path = temp->path;
+  *front = (*front)->next;
+
+  if (*front == NULL) {
+    *back = NULL;
+  }
+
+  free(temp);
+  return 1;
+}
+
+
+typedef struct VisitedNode {
+  StreetSegment *segment;
+  struct VisitedNode *next;
+} VisitedNode;
+
+typedef struct {
+  VisitedNode *buckets[VISITED_BUCKETS];
+} VisitedSet;
+
+static unsigned int hash_segment_pointer(StreetSegment *segment) {
+  return ((unsigned long)segment) % VISITED_BUCKETS;
+}
+
+static void init_visited_set(VisitedSet *set) {
+  int i;
+
+  for (i = 0; i < VISITED_BUCKETS; i++) {
+    set->buckets[i] = NULL;
+  }
+}
+
+static int visited_contains(VisitedSet *set, StreetSegment *segment) {
+  unsigned int index = hash_segment_pointer(segment);
+  VisitedNode *current = set->buckets[index];
+
+  while (current != NULL) {
+    if (current->segment == segment) {
+      return 1;
+    }
+
+    current = current->next;
+  }
+
+  return 0;
+}
+
+static int visited_add(VisitedSet *set, StreetSegment *segment) {
+  unsigned int index;
+  VisitedNode *node;
+
+  if (visited_contains(set, segment)) {
+    return 1;
+  }
+
+  index = hash_segment_pointer(segment);
+  node = malloc(sizeof(VisitedNode));
+
+  if (node == NULL) {
+    return 0;
+  }
+
+  node->segment = segment;
+  node->next = set->buckets[index];
+  set->buckets[index] = node;
+
+  return 1;
+}
+
+static void free_visited_set(VisitedSet *set) {
+  int i;
+
+  for (i = 0; i < VISITED_BUCKETS; i++) {
+    VisitedNode *current = set->buckets[i];
+
+    while (current != NULL) {
+      VisitedNode *next = current->next;
+      free(current);
+      current = next;
+    }
+
+    set->buckets[i] = NULL;
+  }
+}
+
+int bfs_route(IntersectionMap *map,
+              StreetSegment *origin,
+              StreetSegment *destination,
+              Path *result) {
+  QueueNode *front = NULL;
+  QueueNode *back = NULL;
+  VisitedSet visited;
+  Path initial;
+
+  init_visited_set(&visited);
+
+  initial.length = 1;
+  initial.segments[0] = origin;
+
+  enqueue(&front, &back, initial);
+  visited_add(&visited, origin);
+
+  while (dequeue(&front, &back, result)) {
+    StreetSegment *last;
+    IntersectionEntry *entry;
+    ConnectionNode *node;
+
+    last = result->segments[result->length - 1];
+
+    if (last == destination) {
+      free_visited_set(&visited);
+      return 1;
+    }
+
+    entry = find_intersection_entry(map, last->id2);
+
+    if (entry != NULL) {
+      node = entry->segments;
+
+      while (node != NULL) {
+        if (!visited_contains(&visited, node->segment) && result->length < MAX_PATH) {
+          Path new_path = *result;
+          new_path.segments[new_path.length] = node->segment;
+          new_path.length++;
+          visited_add(&visited, node->segment);
+          enqueue(&front, &back, new_path);
+        }
+
+        node = node->next;
+      }
+    }
+  }
+
+  free_visited_set(&visited);
+  return 0;
+}
+
+static double cross_product(StreetSegment *a, StreetSegment *b) {
+  double ax = a->lon2 - a->lon1;
+  double ay = a->lat2 - a->lat1;
+  double bx = b->lon2 - b->lon1;
+  double by = b->lat2 - b->lat1;
+
+  return ax * by - ay * bx;
+}
+
+static const char *turn_direction(StreetSegment *a, StreetSegment *b) {
+  double cross = cross_product(a, b);
+
+  if (cross > 0.00000001) {
+    return "Turn left";
+  }
+
+  if (cross < -0.00000001) {
+    return "Turn right";
+  }
+
+  return "Continue straight";
+}
+
+static void print_route(Path *path) {
+  int i;
+
+  printf("\n--- ROUTE ---\n");
+
+  if (path->length == 0) {
+    printf("No route found\n");
+    return;
+  }
+
+  printf("Start at %s\n", path->segments[0]->name);
+
+  i = 1;
+
+  while (i < path->length) {
+    const char *street_name;
+    const char *direction;
+    double total_distance;
+
+    street_name = path->segments[i]->name;
+    direction = turn_direction(path->segments[i - 1], path->segments[i]);
+    total_distance = 0;
+
+    while (i < path->length &&
+           strcmp(path->segments[i]->name, street_name) == 0) {
+      total_distance += path->segments[i]->length_meters;
+      i++;
+    }
+
+    printf("%s to %s and continue for %.0fm\n",
+           direction,
+           street_name,
+           total_distance);
+  }
+
+  printf("You have arrived to %s\n",
+         path->segments[path->length - 1]->name);
+}
+
+static int ask_position(const char *title,
+                        HouseList *houses,
+                        PlaceList *places,
+                        double *lat,
+                        double *lon) {
   char choice[16];
   char street[MAX_INPUT];
   char numstr[16];
@@ -534,6 +1269,176 @@ void run_program(void) {
   int number;
   House *h;
   Place *p;
+
+  printf("\n--- %s ---\n", title);
+  printf("Where are you? Address (1), Place (2) or Coordinate (3)? ");
+  fgets(choice, sizeof(choice), stdin);
+  trim_newline(choice);
+
+  if (strcmp(choice, "3") == 0) {
+    printf("Enter latitude: ");
+    fgets(numstr, sizeof(numstr), stdin);
+    *lat = atof(numstr);
+
+    printf("Enter longitude: ");
+    fgets(numstr, sizeof(numstr), stdin);
+    *lon = atof(numstr);
+
+    printf("\nFound at (%.6f, %.6f)\n", *lat, *lon);
+    return 1;
+  }
+
+  if (strcmp(choice, "2") == 0) {
+    printf("Enter place name: ");
+    fgets(place_name, sizeof(place_name), stdin);
+    trim_newline(place_name);
+
+    p = find_exact_place(places, place_name);
+
+    if (p == NULL) {
+      char suggestions[MAX_SUGGESTIONS][MAX_NAME];
+      int n;
+      int option;
+      int i;
+
+      n = collect_similar_places(places, place_name,
+                                 suggestions, MAX_SUGGESTIONS);
+
+      if (n <= 0) {
+        printf("Place not found\n");
+        return 0;
+      }
+
+      printf("Place not found. Did you mean:\n");
+
+      for (i = 0; i < n; i++) {
+        printf("%d. %s\n", i + 1, suggestions[i]);
+      }
+
+      printf("Choose a place (1-%d): ", n);
+      fgets(numstr, sizeof(numstr), stdin);
+      option = atoi(numstr);
+
+      if (option < 1 || option > n) {
+        printf("Invalid option.\n");
+        return 0;
+      }
+
+      strcpy(place_name, suggestions[option - 1]);
+      p = find_exact_place(places, place_name);
+    }
+
+    if (p != NULL) {
+      *lat = p->lat;
+      *lon = p->lon;
+
+      printf("\nFound at (%.6f, %.6f)\n", *lat, *lon);
+      return 1;
+    }
+
+    return 0;
+  }
+
+  if (strcmp(choice, "1") == 0) {
+    printf("Enter street name (e.g. 'Carrer de Roc Boronat'): ");
+    fgets(street, sizeof(street), stdin);
+    trim_newline(street);
+
+    if (!street_exists(houses, street)) {
+      char suggestions[MAX_SUGGESTIONS][MAX_NAME];
+      int n;
+      int option;
+      int i;
+
+      n = collect_similar_streets(houses, street,
+                                  suggestions, MAX_SUGGESTIONS);
+
+      if (n <= 0) {
+        printf("Street not found\n");
+        return 0;
+      }
+
+      printf("Street not found. Did you mean:\n");
+
+      for (i = 0; i < n; i++) {
+        printf("%d. %s\n", i + 1, suggestions[i]);
+      }
+
+      printf("Choose a street (1-%d): ", n);
+      fgets(numstr, sizeof(numstr), stdin);
+      option = atoi(numstr);
+
+      if (option < 1 || option > n) {
+        printf("Invalid option.\n");
+        return 0;
+      }
+
+      strcpy(street, suggestions[option - 1]);
+    }
+
+    printf("Enter street number (e.g. '138'): ");
+    fgets(numstr, sizeof(numstr), stdin);
+    number = atoi(numstr);
+
+    h = find_exact_house(houses, street, number);
+
+    if (h == NULL) {
+      int nums[1000];
+      int n;
+      int i;
+
+      n = collect_valid_numbers(houses, street, nums, 1000);
+
+      if (n > 0) {
+        printf("Invalid number. Valid numbers:\n");
+
+        for (i = 0; i < n; i++) {
+          printf("%d ", nums[i]);
+        }
+
+        printf("\nChoose one number: ");
+        fgets(numstr, sizeof(numstr), stdin);
+        number = atoi(numstr);
+
+        h = find_exact_house(houses, street, number);
+      }
+    }
+
+    if (h != NULL) {
+      *lat = h->lat;
+      *lon = h->lon;
+
+      printf("\nFound at (%.6f, %.6f)\n", *lat, *lon);
+      return 1;
+    }
+
+    printf("Address not found\n");
+    return 0;
+  }
+
+  printf("Invalid option.\n");
+  return 0;
+}
+
+/* and here comes the main program */
+
+void run_program(void) {
+  HouseList houses;
+  PlaceList places;
+  StreetList streets;
+  IntersectionMap graph;
+
+  char map[32];
+
+  double origin_lat;
+  double origin_lon;
+  double destination_lat;
+  double destination_lon;
+
+  StreetSegment *origin_segment;
+  StreetSegment *destination_segment;
+
+  Path route;
 
   printf("Enter map name (e.g. 'xs_2' or 'xl_1'): ");
   fgets(map, sizeof(map), stdin);
@@ -553,114 +1458,76 @@ void run_program(void) {
     return;
   }
 
-  printf("\n--- ORIGIN ---\n");
-  printf("Where are you? Address (1), Place (2) or Coordinate (3)? ");
-  fgets(choice, sizeof(choice), stdin);
-  trim_newline(choice);
-
-  if (strcmp(choice, "3") == 0) {
-    printf("Not implemented yet.\n");
+  if (!load_streets_from_file(&streets, map)) {
     free_house_list(&houses);
     free_place_list(&places);
     return;
   }
 
-  if (strcmp(choice, "2") == 0) {
-    printf("Enter place name: ");
-    fgets(place_name, sizeof(place_name), stdin);
-    trim_newline(place_name);
+  init_intersection_map(&graph);
+  build_intersection_map(&graph, &streets);
 
-    p = find_exact_place(&places, place_name);
-
-    if (p != NULL) {
-      printf("\nFound at (%.6f, %.6f)\n", p->lat, p->lon);
-    } else {
-      printf("Place not found\n");
-    }
-
+  if (!ask_position("ORIGIN", &houses, &places, &origin_lat, &origin_lon)) {
     free_house_list(&houses);
     free_place_list(&places);
+    free_intersection_map(&graph);
+    free_street_list(&streets);
     return;
   }
 
-  if (strcmp(choice, "1") != 0) {
-    printf("Invalid option.\n");
+  origin_segment = find_closest_street_segment(&streets, origin_lat, origin_lon);
+
+  if (origin_segment == NULL) {
+    printf("Could not find origin street\n");
     free_house_list(&houses);
     free_place_list(&places);
+    free_intersection_map(&graph);
+    free_street_list(&streets);
     return;
   }
 
-  printf("Enter street name (e.g. 'Carrer de Roc Boronat'): ");
-  fgets(street, sizeof(street), stdin);
-  trim_newline(street);
+  print_connected_streets(&streets, origin_segment);
+  print_connected_streets_fast(&graph, origin_segment);
 
-  if (!street_exists(&houses, street)) {
-    char suggestions[MAX_SUGGESTIONS][MAX_NAME];
-    int n;
-    int option;
-
-    n = collect_similar_streets(&houses, street, suggestions, MAX_SUGGESTIONS);
-
-    if (n > 0) {
-      int i;
-
-      printf("Street not found. Did you mean:\n");
-      for (i = 0; i < n; i++) {
-        printf("%d. %s\n", i + 1, suggestions[i]);
-      }
-
-      printf("Choose a street (1-%d): ", n);
-      fgets(numstr, sizeof(numstr), stdin);
-      option = atoi(numstr);
-
-      if (option >= 1 && option <= n) {
-        strcpy(street, suggestions[option - 1]);
-      } else {
-        printf("Invalid option.\n");
-        free_house_list(&houses);
-        free_place_list(&places);
-        return;
-      }
-    } else {
-      printf("Street not found\n");
-      free_house_list(&houses);
-      free_place_list(&places);
-      return;
-    }
+  if (!ask_position("DESTINATION", &houses, &places,
+                    &destination_lat, &destination_lon)) {
+    free_house_list(&houses);
+    free_place_list(&places);
+    free_intersection_map(&graph);
+    free_street_list(&streets);
+    return;
   }
 
-  printf("Enter street number (e.g. '138'): ");
-  fgets(numstr, sizeof(numstr), stdin);
-  number = atoi(numstr);
+  destination_segment = find_closest_street_segment(&streets,
+                                                   destination_lat,
+                                                   destination_lon);
 
-  h = find_exact_house(&houses, street, number);
-
-  if (h == NULL) {
-    int nums[1000];
-    int n;
-    int i;
-
-    n = collect_valid_numbers(&houses, street, nums, 1000);
-
-    if (n > 0) {
-      printf("Invalid number. Valid numbers:\n");
-      for (i = 0; i < n; i++) {
-        printf("%d ", nums[i]);
-      }
-      printf("\nChoose one number: ");
-      fgets(numstr, sizeof(numstr), stdin);
-      number = atoi(numstr);
-
-      h = find_exact_house(&houses, street, number);
-    }
+  if (destination_segment == NULL) {
+    printf("Could not find destination street\n");
+    free_house_list(&houses);
+    free_place_list(&places);
+    free_intersection_map(&graph);
+    free_street_list(&streets);
+    return;
   }
 
-  if (h != NULL) {
-    printf("\nFound at (%.6f, %.6f)\n", h->lat, h->lon);
+  printf("\nDestination closest street: %s\n", destination_segment->name);
+  printf("Between %s (%.6f, %.6f) and %s (%.6f, %.6f)\n",
+         destination_segment->id1,
+         destination_segment->lat1,
+         destination_segment->lon1,
+         destination_segment->id2,
+         destination_segment->lat2,
+         destination_segment->lon2);
+
+  if (bfs_route(&graph, origin_segment, destination_segment, &route)) {
+    print_route(&route);
   } else {
-    printf("Address not found\n");
+    printf("\nNo route found\n");
   }
 
   free_house_list(&houses);
   free_place_list(&places);
+  free_intersection_map(&graph);
+  free_street_list(&streets);
 }
