@@ -1,4 +1,4 @@
-#include "../src/sample_lib.h"
+#include "sample_lib.h"
 #include "../test/utils.h"
 #include <assert.h>
 #include <stddef.h>
