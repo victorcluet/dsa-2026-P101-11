@@ -115,7 +115,6 @@ StreetSegment *find_closest_street_segment(StreetList *list, double lat,
   return best;
 }
 
-
 static int print_next_different_connected_streets(StreetList *list,
                                                   StreetSegment *segment) {
   StreetSegment *base = segment;
@@ -152,6 +151,7 @@ static int print_next_different_connected_streets(StreetList *list,
 }
 
 void print_connected_streets(StreetList *list, StreetSegment *segment) {
+  StreetSegment *current = list->head;
 
   printf("\nClosest street: %s\n", segment->name);
   printf("Between %s (%.6f, %.6f) and %s (%.6f, %.6f)\n", segment->id1,
