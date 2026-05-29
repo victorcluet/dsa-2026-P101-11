@@ -1,5 +1,5 @@
-#include "sample_lib.h"
-#include "utils.h"
+#include "../src/sample_lib.h"
+#include "../test/utils.h"
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
