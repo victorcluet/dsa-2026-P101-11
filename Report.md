@@ -66,7 +66,6 @@ This behaviour is explained by the neighbour-retrieval step performed during BFS
 
 ![Latency Comparison: Path-Finding by Map Size](chart_bfs.png)
 
-```markdown
 ## 6. Latency Comparison: Path-Finding by Distance (Same Map)
 
 Using the `xl_1` map with a fixed origin, the destination was progressively moved farther away in terms of graph distance in order to isolate the effect of route length from overall map size. Each reported value corresponds to the median of 5 runs executed on the same machine.
