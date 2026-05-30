@@ -138,6 +138,7 @@ int bfs_route(IntersectionMap *map, StreetSegment *origin,
     StreetSegment *last;
     IntersectionEntry *entry;
     ConnectionNode *node;
+    int side;
 
     last = result->segments[result->length - 1];
 
@@ -146,22 +147,29 @@ int bfs_route(IntersectionMap *map, StreetSegment *origin,
       return 1;
     }
 
-    entry = find_intersection_entry(map, last->id2);
+    for (side = 0; side < 2; side++) {
+      if (side == 0) {
+        entry = find_intersection_entry(map, last->id1);
+      } else {
+        entry = find_intersection_entry(map, last->id2);
+      }
 
-    if (entry != NULL) {
-      node = entry->segments;
+      if (entry != NULL) {
+        node = entry->segments;
 
-      while (node != NULL) {
-        if (!visited_contains(&visited, node->segment) &&
-            result->length < MAX_PATH) {
-          Path new_path = *result;
-          new_path.segments[new_path.length] = node->segment;
-          new_path.length++;
-          visited_add(&visited, node->segment);
-          enqueue(&front, &back, new_path);
+        while (node != NULL) {
+          if (!visited_contains(&visited, node->segment) &&
+              result->length < MAX_PATH) {
+            Path new_path = *result;
+            new_path.segments[new_path.length] = node->segment;
+            new_path.length++;
+
+            visited_add(&visited, node->segment);
+            enqueue(&front, &back, new_path);
+          }
+
+          node = node->next;
         }
-
-        node = node->next;
       }
     }
   }

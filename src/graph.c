@@ -96,6 +96,10 @@ int build_intersection_map(IntersectionMap *map, StreetList *streets) {
       return 0;
     }
 
+    if (!add_segment_to_intersection(map, current->id2, current)) {
+      return 0;
+    }
+
     current = current->next;
   }
 
